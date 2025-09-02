@@ -21,7 +21,7 @@ function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
 
   useEffect(() => {
     if (movie.streamUrl) {
-      handleTranscoding();
+      handleVideoSetup();
     } else {
       setError('No stream URL available');
     }
@@ -36,52 +36,74 @@ function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
     };
   }, []);
 
-  const handleTranscoding = async () => {
+  const isTranscodingNeeded = (url: string): boolean => {
+    // Only transcode .mkv files
+    return url.toLowerCase().includes('.mkv');
+  };
+
+  const handleVideoSetup = async () => {
     if (!movie.streamUrl) return;
     
     setLoading(true);
     setError(null);
     
     try {
-      // Find file ID from downloads list
-      const fileId = await realDebridService.findFileIdFromUrl(movie.streamUrl);
-      if (!fileId) {
-        throw new Error('Could not find file ID for transcoding');
-      }
-      
-      // Get transcoding options
-      const transcodingOptions = await realDebridService.getTranscodingOptions(fileId);
-      
-      // Prefer HLS (M3U8) for adaptive streaming, fallback to MP4
-      let selectedUrl = '';
-      let selectedType: 'hls' | 'mp4' | 'webm' = 'mp4';
-      
-      if (transcodingOptions.apple && transcodingOptions.apple.full) {
-        // Prefer HLS for adaptive streaming
-        selectedUrl = transcodingOptions.apple.full;
-        selectedType = 'hls';
-      } else if (transcodingOptions.liveMP4 && transcodingOptions.liveMP4.full) {
-        // Fallback to MP4
-        selectedUrl = transcodingOptions.liveMP4.full;
-        selectedType = 'mp4';
-      } else if (transcodingOptions.h264WebM && transcodingOptions.h264WebM.full) {
-        // Last resort: WebM
-        selectedUrl = transcodingOptions.h264WebM.full;
-        selectedType = 'webm';
-      }
-      
-      if (selectedUrl) {
-        setStreamUrl(selectedUrl);
-        setStreamType(selectedType);
+      if (isTranscodingNeeded(movie.streamUrl)) {
+        // Only transcode .mkv files
+        console.log('MKV file detected, using transcoding...');
+        
+        // Find file ID from downloads list
+        const fileId = await realDebridService.findFileIdFromUrl(movie.streamUrl);
+        if (!fileId) {
+          throw new Error('Could not find file ID for transcoding');
+        }
+        
+        // Get transcoding options
+        const transcodingOptions = await realDebridService.getTranscodingOptions(fileId);
+        
+        // Prefer HLS (M3U8) for adaptive streaming, fallback to MP4
+        let selectedUrl = '';
+        let selectedType: 'hls' | 'mp4' | 'webm' = 'mp4';
+        
+        if (transcodingOptions.apple && transcodingOptions.apple.full) {
+          // Prefer HLS for adaptive streaming
+          selectedUrl = transcodingOptions.apple.full;
+          selectedType = 'hls';
+        } else if (transcodingOptions.liveMP4 && transcodingOptions.liveMP4.full) {
+          // Fallback to MP4
+          selectedUrl = transcodingOptions.liveMP4.full;
+          selectedType = 'mp4';
+        } else if (transcodingOptions.h264WebM && transcodingOptions.h264WebM.full) {
+          // Last resort: WebM
+          selectedUrl = transcodingOptions.h264WebM.full;
+          selectedType = 'webm';
+        }
+        
+        if (selectedUrl) {
+          setStreamUrl(selectedUrl);
+          setStreamType(selectedType);
+        } else {
+          // No transcoding available, use original file
+          console.log('No transcoding available, using original file');
+          setStreamUrl(movie.streamUrl || '');
+          setStreamType('mp4');
+        }
       } else {
-        // No transcoding available, use original file
-        console.log('No transcoding available, using original file');
+        // Direct playback for non-MKV files (MP4, AVI, etc.)
+        console.log('Non-MKV file detected, playing directly...');
         setStreamUrl(movie.streamUrl || '');
-        setStreamType('mp4');
+        
+        // Determine stream type based on file extension
+        const url = movie.streamUrl.toLowerCase();
+        if (url.includes('.webm')) {
+          setStreamType('webm');
+        } else {
+          setStreamType('mp4'); // Default for .mp4, .avi, .mov, etc.
+        }
       }
     } catch (error) {
-      console.error('Transcoding failed:', error);
-      console.log('Transcoding failed, using original file');
+      console.error('Video setup failed:', error);
+      console.log('Video setup failed, using original file');
       setStreamUrl(movie.streamUrl || '');
       setStreamType('mp4');
     } finally {
@@ -111,7 +133,7 @@ function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
       hls.on(Hls.Events.ERROR, (event, data) => {
         console.error('HLS error:', data);
         if (data.fatal) {
-          setError('HLS playback failed. Trying fallback...');
+          setError('HLS playback failed. Trying MP4 fallback...');
           // Try to fallback to MP4 if available
           handleTranscodingFallback();
         }
@@ -256,8 +278,14 @@ function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
 
         <div className="text-center">
           <div className="w-16 h-16 border-4 border-red-600 border-t-transparent rounded-full animate-spin mb-4 mx-auto"></div>
-          <h2 className="text-xl font-semibold mb-2">Preparing Video</h2>
-          <p className="text-gray-400">Transcoding for optimal playback...</p>
+          <h2 className="text-xl font-semibold mb-2">
+            {isTranscodingNeeded(movie.streamUrl || '') ? 'Transcoding Video' : 'Preparing Video'}
+          </h2>
+          <p className="text-gray-400">
+            {isTranscodingNeeded(movie.streamUrl || '') 
+              ? 'Converting MKV for optimal playback...' 
+              : 'Setting up direct playback...'}
+          </p>
         </div>
       </div>
     );
