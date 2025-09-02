@@ -64,18 +64,15 @@ function LibraryView({ onPlayMovie }: LibraryViewProps) {
       const { title, year, quality } = extractMovieInfo(torrent.filename);
       
       let streamUrl = '';
-      let fileId = '';
       
       if (fileIndex !== undefined && torrent.links && torrent.links[fileIndex]) {
         // Play specific file
         const unrestrictedLink = await realDebridService.unrestrictLink(torrent.links[fileIndex]);
         streamUrl = unrestrictedLink.download;
-        fileId = unrestrictedLink.id;
       } else if (torrent.links && torrent.links.length > 0) {
         // Play first available link
         const unrestrictedLink = await realDebridService.unrestrictLink(torrent.links[0]);
         streamUrl = unrestrictedLink.download;
-        fileId = unrestrictedLink.id;
       } else {
         throw new Error('No playable files found');
       }
@@ -91,7 +88,6 @@ function LibraryView({ onPlayMovie }: LibraryViewProps) {
         genre: ['Movie'],
         duration: 120,
         streamUrl: streamUrl,
-        fileId: fileId
       };
       
       onPlayMovie(movieData);

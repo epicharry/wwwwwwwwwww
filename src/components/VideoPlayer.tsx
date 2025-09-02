@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { ArrowLeft, AlertCircle, Settings, Volume2 } from 'lucide-react';
 import Plyr from 'plyr-react';
+import Hls from 'hls.js';
 import 'plyr-react/plyr.css';
 import { Movie } from '../types';
 import { realDebridService } from '../services/realDebridService';
@@ -12,15 +13,28 @@ interface VideoPlayerProps {
 
 function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
   const plyrRef = useRef<any>(null);
+  const hlsRef = useRef<Hls | null>(null);
   const [streamUrl, setStreamUrl] = useState<string>(movie.streamUrl || '');
+  const [streamType, setStreamType] = useState<'hls' | 'mp4' | 'webm'>('mp4');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (movie.streamUrl && movie.streamUrl.endsWith('.mkv')) {
+    if (movie.streamUrl) {
       handleTranscoding();
+    } else {
+      setError('No stream URL available');
     }
   }, [movie.streamUrl]);
+
+  useEffect(() => {
+    return () => {
+      // Cleanup HLS instance on unmount
+      if (hlsRef.current) {
+        hlsRef.current.destroy();
+      }
+    };
+  }, []);
 
   const handleTranscoding = async () => {
     if (!movie.streamUrl) return;
@@ -29,51 +43,112 @@ function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
     setError(null);
     
     try {
-      // Extract file ID from the Real-Debrid URL
-      const fileId = extractFileIdFromUrl(movie.streamUrl);
+      // Find file ID from downloads list
+      const fileId = await realDebridService.findFileIdFromUrl(movie.streamUrl);
       if (!fileId) {
-        throw new Error('Could not extract file ID from URL');
+        throw new Error('Could not find file ID for transcoding');
       }
       
       // Get transcoding options
       const transcodingOptions = await realDebridService.getTranscodingOptions(fileId);
       
-      // Prefer liveMP4 for best compatibility, fallback to other formats
+      // Prefer HLS (M3U8) for adaptive streaming, fallback to MP4
       let selectedUrl = '';
-      if (transcodingOptions.liveMP4 && Object.keys(transcodingOptions.liveMP4).length > 0) {
-        // Get the highest quality available
-        const qualities = Object.keys(transcodingOptions.liveMP4);
-        const bestQuality = qualities.includes('1080') ? '1080' : 
-                           qualities.includes('720') ? '720' : 
-                           qualities.includes('480') ? '480' : qualities[0];
-        selectedUrl = transcodingOptions.liveMP4[bestQuality];
-      } else if (transcodingOptions.apple && Object.keys(transcodingOptions.apple).length > 0) {
-        // Fallback to HLS
-        const qualities = Object.keys(transcodingOptions.apple);
-        const bestQuality = qualities.includes('1080') ? '1080' : 
-                           qualities.includes('720') ? '720' : 
-                           qualities.includes('480') ? '480' : qualities[0];
-        selectedUrl = transcodingOptions.apple[bestQuality];
+      let selectedType: 'hls' | 'mp4' | 'webm' = 'mp4';
+      
+      if (transcodingOptions.apple && transcodingOptions.apple.full) {
+        // Prefer HLS for adaptive streaming
+        selectedUrl = transcodingOptions.apple.full;
+        selectedType = 'hls';
+      } else if (transcodingOptions.liveMP4 && transcodingOptions.liveMP4.full) {
+        // Fallback to MP4
+        selectedUrl = transcodingOptions.liveMP4.full;
+        selectedType = 'mp4';
+      } else if (transcodingOptions.h264WebM && transcodingOptions.h264WebM.full) {
+        // Last resort: WebM
+        selectedUrl = transcodingOptions.h264WebM.full;
+        selectedType = 'webm';
       }
       
       if (selectedUrl) {
         setStreamUrl(selectedUrl);
+        setStreamType(selectedType);
       } else {
-        throw new Error('No compatible transcoding format available');
+        // No transcoding available, use original file
+        console.log('No transcoding available, using original file');
+        setStreamUrl(movie.streamUrl || '');
+        setStreamType('mp4');
       }
     } catch (error) {
       console.error('Transcoding failed:', error);
-      setError('Failed to transcode video. Using original file.');
+      console.log('Transcoding failed, using original file');
       setStreamUrl(movie.streamUrl || '');
+      setStreamType('mp4');
     } finally {
       setLoading(false);
     }
   };
 
-  const extractFileIdFromUrl = (url: string): string | null => {
-    // Extract file ID from Real-Debrid download URL
-    const match = url.match(/\/d\/([^\/]+)/);
-    return match ? match[1] : null;
+  const setupHLS = (videoElement: HTMLVideoElement, url: string) => {
+    if (hlsRef.current) {
+      hlsRef.current.destroy();
+    }
+
+    if (Hls.isSupported()) {
+      const hls = new Hls({
+        enableWorker: true,
+        lowLatencyMode: false,
+        backBufferLength: 90
+      });
+      
+      hls.loadSource(url);
+      hls.attachMedia(videoElement);
+      
+      hls.on(Hls.Events.MANIFEST_PARSED, () => {
+        console.log('HLS manifest loaded');
+      });
+      
+      hls.on(Hls.Events.ERROR, (event, data) => {
+        console.error('HLS error:', data);
+        if (data.fatal) {
+          setError('HLS playback failed. Trying fallback...');
+          // Try to fallback to MP4 if available
+          handleTranscodingFallback();
+        }
+      });
+      
+      hlsRef.current = hls;
+    } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+      // Native HLS support (Safari)
+      videoElement.src = url;
+    } else {
+      console.log('HLS not supported, falling back to MP4');
+      handleTranscodingFallback();
+    }
+  };
+
+  const handleTranscodingFallback = async () => {
+    if (!movie.streamUrl) return;
+    
+    try {
+      const fileId = await realDebridService.findFileIdFromUrl(movie.streamUrl);
+      if (fileId) {
+        const transcodingOptions = await realDebridService.getTranscodingOptions(fileId);
+        
+        if (transcodingOptions.liveMP4 && transcodingOptions.liveMP4.full) {
+          setStreamUrl(transcodingOptions.liveMP4.full);
+          setStreamType('mp4');
+          setError(null);
+        } else {
+          setStreamUrl(movie.streamUrl);
+          setStreamType('mp4');
+        }
+      }
+    } catch (error) {
+      console.error('Fallback failed:', error);
+      setStreamUrl(movie.streamUrl || '');
+      setStreamType('mp4');
+    }
   };
 
   const plyrOptions = {
@@ -137,17 +212,12 @@ function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
   const getVideoSource = () => {
     if (!streamUrl) return null;
     
-    // Determine source type based on URL
-    if (streamUrl.includes('.m3u8')) {
+    if (streamType === 'hls') {
       return {
         type: 'video' as const,
-        sources: [
-          {
-            src: streamUrl,
-            type: 'application/x-mpegURL'
-          }
-        ],
-        poster: movie.backdropUrl
+        sources: [], // HLS will be handled separately
+        poster: movie.backdropUrl,
+        tracks: []
       };
     } else {
       return {
@@ -155,11 +225,20 @@ function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
         sources: [
           {
             src: streamUrl,
-            type: 'video/mp4'
+            type: streamType === 'webm' ? 'video/webm' : 'video/mp4'
           }
         ],
-        poster: movie.backdropUrl
+        poster: movie.backdropUrl,
+        tracks: []
       };
+    }
+  };
+
+  const handlePlyrReady = () => {
+    const player = plyrRef.current?.plyr;
+    if (player && streamType === 'hls' && streamUrl) {
+      const videoElement = player.media;
+      setupHLS(videoElement, streamUrl);
     }
   };
 
@@ -245,11 +324,14 @@ function VideoPlayer({ movie, onBack }: VideoPlayerProps) {
 
       {/* Plyr Video Player */}
       <div className="w-full h-full">
-        <Plyr
-          ref={plyrRef}
-          source={videoSource}
-          options={plyrOptions}
-        />
+        {videoSource && (
+          <Plyr
+            ref={plyrRef}
+            source={videoSource}
+            options={plyrOptions}
+            onReady={handlePlyrReady}
+          />
+        )}
       </div>
     </div>
   );

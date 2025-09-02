@@ -118,10 +118,32 @@ class RealDebridService {
 
   async getTranscodingOptions(fileId: string): Promise<any> {
     try {
-      return await this.makeRequest(`/streaming/transcode/${fileId}`);
+      const response = await this.makeRequest(`/streaming/transcode/${fileId}`);
+      console.log('Transcoding response:', response);
+      return response;
     } catch (error) {
       console.error('Error getting transcoding options:', error);
       throw new Error('Failed to get transcoding options');
+    }
+  }
+
+  async getDownloads(): Promise<any[]> {
+    try {
+      return await this.makeRequest('/downloads');
+    } catch (error) {
+      console.error('Error getting downloads:', error);
+      throw new Error('Failed to get downloads');
+    }
+  }
+
+  async findFileIdFromUrl(downloadUrl: string): Promise<string | null> {
+    try {
+      const downloads = await this.getDownloads();
+      const matchingDownload = downloads.find(dl => dl.download === downloadUrl);
+      return matchingDownload ? matchingDownload.id : null;
+    } catch (error) {
+      console.error('Error finding file ID:', error);
+      return null;
     }
   }
 
